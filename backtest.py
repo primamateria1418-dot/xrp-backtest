@@ -28,7 +28,7 @@ LEVERAGE       = 3
 FEE_RATE       = 0.0005
 STOP_LOSS      = 0.008
 TAKE_PROFIT    = 0.015
-TRAIL_OFFSET   = 0.004
+TRAIL_OFFSET   = 0.002  # tightened from 0.004 — test with better entries
 MIN_HOLD_SECS  = 180
 KILL_MAX_LOSS  = 0.002
 RSI_OVERSOLD   = 35
@@ -299,7 +299,7 @@ def print_results(trades, final_balance):
     avg_hold = sum(t["held_min"] for t in trades)/n
 
     print("\n" + "="*60)
-    print("  XRP SCALPER — REDESIGNED SIGNAL — 30-DAY BACKTEST")
+    print("  XRP SCALPER — REDESIGNED SIGNAL + TIGHT TRAIL — 30-DAY BACKTEST")
     print("  RSI cross mandatory + tight BB + vol spike + 5m confirm")
     print("="*60)
     print(f"  Starting balance : ${CAPITAL:.2f}")
