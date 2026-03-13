@@ -1,21 +1,24 @@
 """
-XRP Scalper v4.2 — 30-Day Backtest
-Mirrors v4.2 logic exactly:
-  - Signal threshold: 3/5 (not 4/5)
-  - Tiered trailing stop (0.10% → 0.20% → 0.25% → 0.30% → 0.20% at TP)
-  - NO time stop
-  - NO conviction check
-  - NO RSI extreme exit
-  - NO deceleration tightening
-  - Opposite signal kill after MIN_HOLD_SECS (gated by KILL_MAX_LOSS)
-  - Hard stop loss: 0.8%
-No AI scorer — uses passthrough (all signals accepted).
+XRP Scalper — SIGNAL REDESIGN Backtest
+Key change: no free points. Every condition must be genuinely earned.
+
+OLD signal (3/5):
+  1. RSI cross (rare, meaningful)
+  2. At BB band (ok)
+  3. Volume >= 0.60x  ← almost always free
+  4. Near EMA200      ← almost always free in ranging market
+  5. RSI bias >/<50   ← free half the time
+
+NEW signal (need 3/4, all meaningful):
+  1. RSI cross through oversold/overbought (mandatory — no cross = no trade)
+  2. Price AT or BEYOND BB band (tighter: within 0.2% not 0.5%)
+  3. Volume spike >= 1.5x avg (genuine momentum, not just "present")
+  4. 5m RSI confirms direction (RSI5m < 45 for longs, > 55 for shorts)
+
+Plus v4.2 exits: tiered trail, opposite signal kill, RSI extreme exit.
 """
 
-import requests
-import os
-import math
-import time
+import requests, os, math, time
 from datetime import datetime, timezone
 
 COINEX_ACCESS_ID = os.getenv("COINEX_ACCESS_ID", "")
@@ -23,20 +26,20 @@ COINEX_ACCESS_ID = os.getenv("COINEX_ACCESS_ID", "")
 CAPITAL        = 27.00
 LEVERAGE       = 3
 FEE_RATE       = 0.0005
-MIN_VOL_RATIO  = 0.60
 STOP_LOSS      = 0.008
 TAKE_PROFIT    = 0.015
-TRAIL_OFFSET   = 0.004  # restored to v4.2 default
+TRAIL_OFFSET   = 0.004
 MIN_HOLD_SECS  = 180
 KILL_MAX_LOSS  = 0.002
 RSI_OVERSOLD   = 35
 RSI_OVERBOUGHT = 65
-RSI_EXTREME_LOW  = 25   # force exit longs below this
-RSI_EXTREME_HIGH = 80   # force exit shorts above this
-RSI_EXTREME_LOOPS = 3   # consecutive loops required
+RSI_EXTREME_LOW  = 25
+RSI_EXTREME_HIGH = 80
+RSI_EXTREME_LOOPS = 3
 BB_PERIOD      = 20
 EMA_PERIOD     = 200
 RSI_PERIOD     = 14
+VOL_SPIKE      = 1.5   # require genuine volume spike
 
 def fetch_klines_range(days=30):
     print(f"Fetching {days} days of 1m klines from CoinEx...")
@@ -113,33 +116,55 @@ def calc_signals(klines):
         ema = p*k_ema + ema*(1-k_ema)
     vol_avg = sum(vols[-BB_PERIOD-1:-1])/BB_PERIOD
     vol_cur = vols[-2]
+
+    # 5m RSI — approximate from 1m data (every 5 candles)
+    closes_5m = [closes[i] for i in range(0, len(closes), 5)]
+    rsi_5m = None
+    if len(closes_5m) >= RSI_PERIOD + 2:
+        d5 = [closes_5m[i]-closes_5m[i-1] for i in range(1, len(closes_5m))]
+        g5 = [max(x,0) for x in d5]
+        l5 = [max(-x,0) for x in d5]
+        ag = sum(g5[:RSI_PERIOD])/RSI_PERIOD
+        al = sum(l5[:RSI_PERIOD])/RSI_PERIOD
+        for i in range(RSI_PERIOD, len(g5)):
+            ag = (ag*(RSI_PERIOD-1)+g5[i])/RSI_PERIOD
+            al = (al*(RSI_PERIOD-1)+l5[i])/RSI_PERIOD
+        rs = ag/al if al != 0 else float('inf')
+        rsi_5m = 100-(100/(1+rs))
+
     return {"price": closes[-1], "rsi": rsi_vals[-1], "rsi_prev": rsi_vals[-2],
             "bb_upper": bb_upper, "bb_lower": bb_lower, "ema200": ema,
-            "vol": vol_cur, "vol_avg": vol_avg}
+            "vol": vol_cur, "vol_avg": vol_avg, "rsi_5m": rsi_5m}
 
 def get_signal(sig):
     price    = sig["price"]
     rsi      = sig["rsi"]
     rsi_prev = sig["rsi_prev"]
-    vol_ratio = sig["vol"]/sig["vol_avg"] if sig["vol_avg"] > 0 else 0
-    if vol_ratio < MIN_VOL_RATIO:
-        return None
-    long_score = 0
-    if rsi_prev < RSI_OVERSOLD <= rsi:              long_score += 1
-    if price <= sig["bb_lower"]*1.005 and rsi < 50: long_score += 1
-    long_score += 1
-    if price >= sig["ema200"]*0.99:                 long_score += 1
-    if rsi <= 50:                                   long_score += 1
-    short_score = 0
-    if rsi_prev > RSI_OVERBOUGHT >= rsi:            short_score += 1
-    if price >= sig["bb_upper"]*0.990:              short_score += 1
-    short_score += 1
-    if price <= sig["ema200"]*1.03:                 short_score += 1
-    if rsi >= 50:                                   short_score += 1
-    if long_score >= 3 and short_score >= 3:
-        return "long" if long_score >= short_score else "short"
-    elif long_score >= 3:  return "long"
-    elif short_score >= 3: return "short"
+    vol_avg  = sig["vol_avg"]
+    vol      = sig["vol"]
+    rsi_5m   = sig["rsi_5m"]
+    vol_ratio = vol/vol_avg if vol_avg > 0 else 0
+
+    # LONG: need 3 of 4 conditions — but RSI cross is MANDATORY
+    rsi_cross_long = rsi_prev < RSI_OVERSOLD <= rsi
+    if rsi_cross_long:
+        score = 1
+        if price <= sig["bb_lower"] * 1.002:  score += 1  # AT lower BB (tight)
+        if vol_ratio >= VOL_SPIKE:             score += 1  # genuine vol spike
+        if rsi_5m is not None and rsi_5m < 45: score += 1  # 5m confirms
+        if score >= 3:
+            return "long"
+
+    # SHORT: need 3 of 4 conditions — but RSI cross is MANDATORY
+    rsi_cross_short = rsi_prev > RSI_OVERBOUGHT >= rsi
+    if rsi_cross_short:
+        score = 1
+        if price >= sig["bb_upper"] * 0.998:  score += 1  # AT upper BB (tight)
+        if vol_ratio >= VOL_SPIKE:             score += 1  # genuine vol spike
+        if rsi_5m is not None and rsi_5m > 55: score += 1  # 5m confirms
+        if score >= 3:
+            return "short"
+
     return None
 
 def get_trail_offset(pnl):
@@ -152,14 +177,14 @@ def get_trail_offset(pnl):
 
 def run_backtest(klines):
     print(f"\nRunning backtest on {len(klines)} candles...")
-    balance    = CAPITAL
-    trades     = []
-    in_trade   = False
-    direction  = None
-    entry      = peak = position = 0.0
+    balance   = CAPITAL
+    trades    = []
+    in_trade  = False
+    direction = None
+    entry = peak = position = 0.0
     entry_loop = 0
     rsi_extreme_count = 0
-    WINDOW     = EMA_PERIOD + 50
+    WINDOW = EMA_PERIOD + 50
 
     for i in range(WINDOW, len(klines)):
         window = klines[i-WINDOW:i+1]
@@ -185,18 +210,18 @@ def run_backtest(klines):
                 exit_reason = f"SL {pnl*100:.2f}%"
                 exit_type   = "sl"
 
-            # 2. RSI extreme exit (v4.4 feature added to v4.2)
+            # 2. RSI extreme exit
             if not exit_reason:
                 if (direction == "long"  and sig["rsi"] <= RSI_EXTREME_LOW) or \
                    (direction == "short" and sig["rsi"] >= RSI_EXTREME_HIGH):
                     rsi_extreme_count += 1
                     if rsi_extreme_count >= RSI_EXTREME_LOOPS:
-                        exit_reason = f"RSI extreme {sig['rsi']:.1f} for {RSI_EXTREME_LOOPS} loops"
+                        exit_reason = f"RSI extreme {sig['rsi']:.1f}"
                         exit_type   = "rsi_extreme"
                 else:
                     rsi_extreme_count = 0
 
-            # 2. Tiered trail (fires from entry, no trigger threshold — v4.2 style)
+            # 3. Tiered trail
             if not exit_reason:
                 to = get_trail_offset(pnl)
                 if direction == "long":
@@ -208,7 +233,7 @@ def run_backtest(klines):
                         exit_reason = f"Trail {pnl*100:.2f}% (offset {to*100:.2f}%)"
                         exit_type   = "trail"
 
-            # 3. Opposite signal kill
+            # 4. Opposite signal kill
             if not exit_reason and secs_held >= MIN_HOLD_SECS and pnl >= -KILL_MAX_LOSS:
                 opp = get_signal(sig)
                 if opp and opp != direction:
@@ -247,7 +272,7 @@ def run_backtest(klines):
 
 def print_results(trades, final_balance):
     if not trades:
-        print("No trades generated.")
+        print("No trades generated — signal too strict or no qualifying setups found.")
         return
     n         = len(trades)
     wins      = [t for t in trades if t["pnl_pct"] > 0]
@@ -274,7 +299,8 @@ def print_results(trades, final_balance):
     avg_hold = sum(t["held_min"] for t in trades)/n
 
     print("\n" + "="*60)
-    print("  XRP SCALPER v4.2 + RSI EXTREME EXIT — 30-DAY BACKTEST")
+    print("  XRP SCALPER — REDESIGNED SIGNAL — 30-DAY BACKTEST")
+    print("  RSI cross mandatory + tight BB + vol spike + 5m confirm")
     print("="*60)
     print(f"  Starting balance : ${CAPITAL:.2f}")
     print(f"  Final balance    : ${final_balance:.4f}")
@@ -316,7 +342,7 @@ def print_results(trades, final_balance):
     print("="*60)
 
 if __name__ == "__main__":
-    print("XRP Scalper v4.2 — Backtest Runner")
+    print("XRP Scalper — Redesigned Signal Backtest")
     print(f"CoinEx API: {'CONFIGURED' if COINEX_ACCESS_ID else 'NOT SET'}")
     klines = fetch_klines_range(days=30)
     if len(klines) < EMA_PERIOD + 100:
