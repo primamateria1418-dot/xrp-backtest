@@ -62,6 +62,8 @@ def fetch_klines_range(days=30):
                     "market": "XRPUSDT",
                     "period": "1min",
                     "limit": 1000,
+                    "start_time": start_ts,
+                    "end_time": end_ts,
                 },
                 timeout=15
             )
@@ -69,12 +71,28 @@ def fetch_klines_range(days=30):
             if d.get("code") != 0 or not d.get("data"):
                 print(f"  API error: {d.get('message', 'unknown')}")
                 break
-            batch = d["data"]
-            if not batch:
+            raw_batch = d["data"]
+            if not raw_batch:
                 break
+            # CoinEx v2 returns dicts: {created_at, open, high, low, close, volume, ...}
+            # Normalize to list format: [timestamp, open, close, high, low, volume]
+            batch = []
+            for k in raw_batch:
+                if isinstance(k, dict):
+                    batch.append([
+                        int(k.get("created_at", 0)),
+                        float(k.get("open", 0)),
+                        float(k.get("close", 0)),
+                        float(k.get("high", 0)),
+                        float(k.get("low", 0)),
+                        float(k.get("volume", 0)),
+                    ])
+                else:
+                    # already a list
+                    batch.append([float(x) for x in k])
             all_klines = batch + all_klines
             fetched += len(batch)
-            end_ts = int(batch[0][0]) - 60
+            end_ts = batch[0][0] - 60
             print(f"  Fetched {fetched} candles so far...")
             time.sleep(0.3)  # rate limit respect
             if fetched >= total_needed:
