@@ -26,7 +26,7 @@ FEE_RATE       = 0.0005
 MIN_VOL_RATIO  = 0.60
 STOP_LOSS      = 0.008
 TAKE_PROFIT    = 0.015
-TRAIL_OFFSET   = 0.004
+TRAIL_OFFSET   = 0.002  # reduced from 0.004 — cap early losses at 0.20%
 MIN_HOLD_SECS  = 180
 KILL_MAX_LOSS  = 0.002
 RSI_OVERSOLD   = 35
@@ -258,7 +258,7 @@ def print_results(trades, final_balance):
     avg_hold = sum(t["held_min"] for t in trades)/n
 
     print("\n" + "="*60)
-    print("  XRP SCALPER v4.2 — 30-DAY BACKTEST RESULTS")
+    print("  XRP SCALPER v4.2 — 30-DAY BACKTEST RESULTS (TRAIL_OFFSET=0.20%)")
     print("="*60)
     print(f"  Starting balance : ${CAPITAL:.2f}")
     print(f"  Final balance    : ${final_balance:.4f}")
