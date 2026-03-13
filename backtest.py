@@ -26,11 +26,14 @@ FEE_RATE       = 0.0005
 MIN_VOL_RATIO  = 0.60
 STOP_LOSS      = 0.008
 TAKE_PROFIT    = 0.015
-TRAIL_OFFSET   = 0.002  # reduced from 0.004 — cap early losses at 0.20%
+TRAIL_OFFSET   = 0.004  # restored to v4.2 default
 MIN_HOLD_SECS  = 180
 KILL_MAX_LOSS  = 0.002
 RSI_OVERSOLD   = 35
 RSI_OVERBOUGHT = 65
+RSI_EXTREME_LOW  = 25   # force exit longs below this
+RSI_EXTREME_HIGH = 80   # force exit shorts above this
+RSI_EXTREME_LOOPS = 3   # consecutive loops required
 BB_PERIOD      = 20
 EMA_PERIOD     = 200
 RSI_PERIOD     = 14
@@ -155,6 +158,7 @@ def run_backtest(klines):
     direction  = None
     entry      = peak = position = 0.0
     entry_loop = 0
+    rsi_extreme_count = 0
     WINDOW     = EMA_PERIOD + 50
 
     for i in range(WINDOW, len(klines)):
@@ -180,6 +184,17 @@ def run_backtest(klines):
             if pnl <= -STOP_LOSS:
                 exit_reason = f"SL {pnl*100:.2f}%"
                 exit_type   = "sl"
+
+            # 2. RSI extreme exit (v4.4 feature added to v4.2)
+            if not exit_reason:
+                if (direction == "long"  and sig["rsi"] <= RSI_EXTREME_LOW) or \
+                   (direction == "short" and sig["rsi"] >= RSI_EXTREME_HIGH):
+                    rsi_extreme_count += 1
+                    if rsi_extreme_count >= RSI_EXTREME_LOOPS:
+                        exit_reason = f"RSI extreme {sig['rsi']:.1f} for {RSI_EXTREME_LOOPS} loops"
+                        exit_type   = "rsi_extreme"
+                else:
+                    rsi_extreme_count = 0
 
             # 2. Tiered trail (fires from entry, no trigger threshold — v4.2 style)
             if not exit_reason:
@@ -216,6 +231,7 @@ def run_backtest(klines):
                                 "held_min": loops_held})
                 in_trade = False
                 direction = None
+                rsi_extreme_count = 0
         else:
             direction = get_signal(sig)
             if direction:
@@ -258,7 +274,7 @@ def print_results(trades, final_balance):
     avg_hold = sum(t["held_min"] for t in trades)/n
 
     print("\n" + "="*60)
-    print("  XRP SCALPER v4.2 — 30-DAY BACKTEST RESULTS (TRAIL_OFFSET=0.20%)")
+    print("  XRP SCALPER v4.2 + RSI EXTREME EXIT — 30-DAY BACKTEST")
     print("="*60)
     print(f"  Starting balance : ${CAPITAL:.2f}")
     print(f"  Final balance    : ${final_balance:.4f}")
