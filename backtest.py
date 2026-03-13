@@ -49,12 +49,12 @@ def fetch_klines_range(days=30):
     all_klines = []
     # 30 days = 43200 candles, fetch in 1000-candle batches
     total_needed = days * 24 * 60
-    end_ts = int(time.time())
-    batch_secs = 1000 * 60  # 1000 candles × 1 min each
+    end_ts = int(time.time() * 1000)  # CoinEx v2 uses milliseconds
+    batch_ms = 1000 * 60 * 1000  # 1000 candles × 1 min each, in milliseconds
 
     fetched = 0
     while fetched < total_needed:
-        start_ts = end_ts - batch_secs
+        start_ts = end_ts - batch_ms
         try:
             r = requests.get(
                 "https://api.coinex.com/v2/futures/kline",
@@ -75,7 +75,7 @@ def fetch_klines_range(days=30):
             if not raw_batch:
                 break
             # CoinEx v2 returns dicts: {created_at, open, high, low, close, volume, ...}
-            # Normalize to list format: [timestamp, open, close, high, low, volume]
+            # Normalize to list format: [timestamp_ms, open, close, high, low, volume]
             batch = []
             for k in raw_batch:
                 if isinstance(k, dict):
@@ -88,11 +88,10 @@ def fetch_klines_range(days=30):
                         float(k.get("volume", 0)),
                     ])
                 else:
-                    # already a list
                     batch.append([float(x) for x in k])
             all_klines = batch + all_klines
             fetched += len(batch)
-            end_ts = batch[0][0] - 60
+            end_ts = batch[0][0] - 60000  # step back 1 minute in milliseconds
             print(f"  Fetched {fetched} candles so far...")
             time.sleep(0.3)  # rate limit respect
             if fetched >= total_needed:
@@ -341,7 +340,7 @@ def run_backtest(klines):
                 margin  = (position * entry) / LEVERAGE
                 balance += margin + pnl_usd
 
-                ts = int(klines[i][0])
+                ts = int(klines[i][0]) // 1000  # convert ms to seconds
                 dt = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
                 trades.append({
                     "n":          len(trades) + 1,
